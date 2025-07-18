@@ -4,7 +4,17 @@ import random
 import sys
 from scipy.stats import bernoulli
 
-def eps_focus(data, epsilon, threshold):
+def generate_data(M, T, nu, mu1):
+    mu0 = 0
+    # Assume changepoint is in stream 0
+    data = np.zeros((M,T))
+    data[0][:nu] = norm.rvs(size=nu)
+    data[0][nu:] = norm.rvs(loc=mu1,size=T-nu)
+    for i in range(1,M):
+        data[i] = norm.rvs(loc=mu0,size=T)
+    return data
+
+def focus_decay(data, threshold):
     # Implementation of multi-stream FOCuS for any mu
     # Each stream gets its own set of quadratics
     # Initialization
@@ -12,47 +22,30 @@ def eps_focus(data, epsilon, threshold):
     T = data.shape[1]
     S = np.zeros(M)
     N = np.zeros(M)
-    quadratics_positive = [[(0,0,0,S.copy(),N.copy())] for m in range(M)]
-    quadratics_negative = [[(0,0,0,S.copy(),N.copy())] for m in range(M)]
+    quadratics_positive = [[(0,0,0,0)] for m in range(M)]
+    quadratics_negative = [[(0,0,0,0)] for m in range(M)]
+    #M_previous = np.random.randint(M)
+    glr_previous = np.zeros(M)
+    v_previous = np.zeros(M)
     # tau, s, l, vec{S}, vec{N} 
     
     for t in range(T):
         # First perform stream selection with epsilon-greedy
+        m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
+        v_t = v_previous[m_t]
+        epsilon = min(1,(t+1-v_t)**(-1/3))
         exploration = bernoulli.rvs(epsilon)
         if exploration:
             a_t = np.random.randint(M)
         else:
-            best_glr = 0
-            S_nu = np.zeros(M)
-            N_nu = np.zeros(M)
-            # Find stream and changepoint containing best GLR statistic
-            for m in range(M):
-                # iterate through stream m's quadratics
-                # if no samples then keep going
-                if N[m] == 0:
-                    continue
-                else:
-                    for quadratic in quadratics_positive[m] + quadratics_negative[m]:
-                        if N[m]-quadratic[0]==0: 
-                            continue
-                        elif (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))>best_glr:
-                            best_glr = (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))
-                            S_nu = quadratic[3].copy()
-                            N_nu = quadratic[4].copy()
-            # Check if there exists any stream which do not have any post-change samples 
-            M_0 = np.where((N-N_nu)==0)[0]
-            if len(M_0) == 0:
-                sample_means = (S-S_nu)/(N-N_nu)
-                a_t = np.argmax(np.abs(sample_means))
-            else:
-                a_t = np.random.choice(M_0)
+            a_t = m_t
         # Get observation
         X_t = data[a_t,t]
         N[a_t] = N[a_t] + 1
         S[a_t] = S[a_t] + X_t
         # Positive update
         k = len(quadratics_positive[a_t])
-        quadratic_add = [N[a_t],S[a_t],np.inf,N.copy(),S.copy()]
+        quadratic_add = [N[a_t],S[a_t],np.inf,t+1]
         i = k
         while (2*(quadratic_add[1]-quadratics_positive[a_t][i-1][1])-(quadratic_add[0]-quadratics_positive[a_t][i-1][0])*quadratics_positive[a_t][i-1][2])<=0 and i>=1:
             i = i-1
@@ -62,7 +55,7 @@ def eps_focus(data, epsilon, threshold):
     
         # Now negative update
         k = len(quadratics_negative[a_t])
-        quadratic_add = [N[a_t],S[a_t],-np.inf,N.copy(),S.copy()]
+        quadratic_add = [N[a_t],S[a_t],-np.inf,t+1]
         i = k
         while (2*(quadratic_add[1]-quadratics_negative[a_t][i-1][1])-(quadratic_add[0]-quadratics_negative[a_t][i-1][0])*quadratics_negative[a_t][i-1][2])>=0 and i>=1:
             i = i-1
@@ -71,12 +64,128 @@ def eps_focus(data, epsilon, threshold):
         quadratics_negative[a_t].append(tuple(quadratic_add))
 
         best_glr = 0
-        # iterate through stream a_t's quadratics
-        # if no samples then keep going
-        if N[a_t] > 0:
-            for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
-                if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
-                    best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+        # iterate through quadratics and get change-point estimate
+        for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
+            if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
+                best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+                v_previous[a_t] = quadratic[3]
+                glr_previous[a_t] = best_glr
+        if best_glr>=threshold:
+            return t+1, best_glr
+
+def focus_nonuhat(data, threshold):
+    # Implementation of multi-stream FOCuS for any mu
+    # Each stream gets its own set of quadratics
+    # Initialization
+    M = data.shape[0]
+    T = data.shape[1]
+    S = np.zeros(M)
+    N = np.zeros(M)
+    quadratics_positive = [[(0,0,0)] for m in range(M)]
+    quadratics_negative = [[(0,0,0)] for m in range(M)]
+    #M_previous = np.random.randint(M)
+    glr_previous = np.zeros(M)
+    # tau, s, l, vec{S}, vec{N} 
+    
+    for t in range(T):
+        # First perform stream selection with epsilon-greedy
+        m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
+        epsilon = min(1,(t+1)**(-1/3))
+        exploration = bernoulli.rvs(epsilon)
+        if exploration:
+            a_t = np.random.randint(M)
+        else:
+            a_t = m_t
+        # Get observation
+        X_t = data[a_t,t]
+        N[a_t] = N[a_t] + 1
+        S[a_t] = S[a_t] + X_t
+        # Positive update
+        k = len(quadratics_positive[a_t])
+        quadratic_add = [N[a_t],S[a_t],np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_positive[a_t][i-1][1])-(quadratic_add[0]-quadratics_positive[a_t][i-1][0])*quadratics_positive[a_t][i-1][2])<=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = max(0,2*(quadratic_add[0]-quadratics_positive[a_t][i-1][0])/(quadratic_add[2]-quadratics_positive[a_t][i-1][2]))
+        quadratics_positive[a_t] = quadratics_positive[a_t][:i].copy()
+        quadratics_positive[a_t].append(tuple(quadratic_add))
+    
+        # Now negative update
+        k = len(quadratics_negative[a_t])
+        quadratic_add = [N[a_t],S[a_t],-np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_negative[a_t][i-1][1])-(quadratic_add[0]-quadratics_negative[a_t][i-1][0])*quadratics_negative[a_t][i-1][2])>=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = min(0,2*(quadratic_add[0]-quadratics_negative[a_t][i-1][0])/(quadratic_add[2]-quadratics_negative[a_t][i-1][2]))
+        quadratics_negative[a_t] = quadratics_negative[a_t][:i].copy()
+        quadratics_negative[a_t].append(tuple(quadratic_add))
+
+        best_glr = 0
+        # iterate through quadratics and get change-point estimate
+        for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
+            if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
+                best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+                glr_previous[a_t] = best_glr
+        if best_glr>=threshold:
+            return t+1, best_glr
+
+def focus_oracle(data, threshold, nu):
+    # Implementation of multi-stream FOCuS for any mu
+    # Each stream gets its own set of quadratics
+    # Initialization
+    # Algorithm knows change-point location ahead of time to test estimation procedure
+    M = data.shape[0]
+    T = data.shape[1]
+    S = np.zeros(M)
+    N = np.zeros(M)
+    quadratics_positive = [[(0,0,0)] for m in range(M)]
+    quadratics_negative = [[(0,0,0)] for m in range(M)]
+    #M_previous = np.random.randint(M)
+    glr_previous = np.zeros(M)
+    # tau, s, l, vec{S}, vec{N} 
+    
+    for t in range(T):
+        # First perform stream selection with epsilon-greedy
+        m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
+        if t+1>nu:
+            epsilon = min(1,(t+1-nu)**(-1/3))
+        else:
+            epsilon = 1
+        exploration = bernoulli.rvs(epsilon)
+        if exploration:
+            a_t = np.random.randint(M)
+        else:
+            a_t = m_t
+        # Get observation
+        X_t = data[a_t,t]
+        N[a_t] = N[a_t] + 1
+        S[a_t] = S[a_t] + X_t
+        # Positive update
+        k = len(quadratics_positive[a_t])
+        quadratic_add = [N[a_t],S[a_t],np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_positive[a_t][i-1][1])-(quadratic_add[0]-quadratics_positive[a_t][i-1][0])*quadratics_positive[a_t][i-1][2])<=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = max(0,2*(quadratic_add[0]-quadratics_positive[a_t][i-1][0])/(quadratic_add[2]-quadratics_positive[a_t][i-1][2]))
+        quadratics_positive[a_t] = quadratics_positive[a_t][:i].copy()
+        quadratics_positive[a_t].append(tuple(quadratic_add))
+    
+        # Now negative update
+        k = len(quadratics_negative[a_t])
+        quadratic_add = [N[a_t],S[a_t],-np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_negative[a_t][i-1][1])-(quadratic_add[0]-quadratics_negative[a_t][i-1][0])*quadratics_negative[a_t][i-1][2])>=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = min(0,2*(quadratic_add[0]-quadratics_negative[a_t][i-1][0])/(quadratic_add[2]-quadratics_negative[a_t][i-1][2]))
+        quadratics_negative[a_t] = quadratics_negative[a_t][:i].copy()
+        quadratics_negative[a_t].append(tuple(quadratic_add))
+
+        best_glr = 0
+        # iterate through quadratics and get change-point estimate
+        for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
+            if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
+                best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+                glr_previous[a_t] = best_glr
         if best_glr>=threshold:
             return t+1, best_glr
 
@@ -115,74 +224,42 @@ def single_stream(data, threshold):
         if best_glr>=threshold:
             return t+1, best_glr
 
-def changepoint_estimation(data, epsilon):
+
+def generate_history(data):
+    # Implementation of multi-stream FOCuS for any mu
+    # Each stream gets its own set of quadratics
+    # Initialization
     M = data.shape[0]
     T = data.shape[1]
     S = np.zeros(M)
     N = np.zeros(M)
-    # Add time step location tracker
-    quadratics_positive = [[(0,0,0,S.copy(),N.copy(),0)] for m in range(M)]
-    quadratics_negative = [[(0,0,0,S.copy(),N.copy(),0)] for m in range(M)]
-    changepoint_location = np.zeros(T)
-    stream_mle = -np.ones(T)
+    quadratics_positive = [[(0,0,0,0)] for m in range(M)]
+    quadratics_negative = [[(0,0,0,0)] for m in range(M)]
+    M_previous = np.random.randint(M)
+    v_previous = 0
+    changepoint_history = np.zeros(T)
+    glr_history = np.zeros((T,M))
+    glr_previous = np.zeros(M)
+    v_previous = np.zeros(M)
+    # tau, s, l, vec{S}, vec{N} 
     
     for t in range(T):
-        # Estimate change-point
-        changepoint_estimate = 0
-        best_glr = 0
-        # If no stream is best might as well be random
-        stream_best = np.random.randint(M)
-        for m in range(M):
-            # iterate through stream m's quadratics
-            # if no samples then keep going
-            if N[m] == 0:
-                continue
-            else:
-                for quadratic in quadratics_positive[m] + quadratics_negative[m]:
-                    if N[m]-quadratic[0]==0: 
-                        continue
-                    elif (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))>best_glr:
-                        best_glr = (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))
-                        stream_best = m
-                        changepoint_estimate = quadratic[5]
-        stream_mle[t] = stream_best
-        changepoint_location[t] = changepoint_estimate
         # First perform stream selection with epsilon-greedy
+        m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
+        v_t = v_previous[m_t]
+        epsilon = min(1,(t+1-v_t)**(-1/3))
         exploration = bernoulli.rvs(epsilon)
         if exploration:
             a_t = np.random.randint(M)
         else:
-            best_glr = 0
-            S_nu = np.zeros(M)
-            N_nu = np.zeros(M)
-            # Find stream and changepoint containing best GLR statistic
-            for m in range(M):
-                # iterate through stream m's quadratics
-                # if no samples then keep going
-                if N[m] == 0:
-                    continue
-                else:
-                    for quadratic in quadratics_positive[m] + quadratics_negative[m]:
-                        if N[m]-quadratic[0]==0: 
-                            continue
-                        elif (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))>best_glr:
-                            best_glr = (S[m]-quadratic[1])**2/(2*(N[m]-quadratic[0]))
-                            S_nu = quadratic[3].copy()
-                            N_nu = quadratic[4].copy()
-            # Check if there exists any stream which do not have any post-change samples 
-            M_0 = np.where((N-N_nu)==0)[0]
-            if len(M_0) == 0:
-                sample_means = (S-S_nu)/(N-N_nu)
-                a_t = np.argmax(np.abs(sample_means))
-            else:
-                a_t = np.random.choice(M_0)
+            a_t = m_t
         # Get observation
         X_t = data[a_t,t]
         N[a_t] = N[a_t] + 1
         S[a_t] = S[a_t] + X_t
         # Positive update
         k = len(quadratics_positive[a_t])
-        quadratic_add = [N[a_t],S[a_t],np.inf,N.copy(),S.copy(),t+1]
+        quadratic_add = [N[a_t],S[a_t],np.inf,t+1]
         i = k
         while (2*(quadratic_add[1]-quadratics_positive[a_t][i-1][1])-(quadratic_add[0]-quadratics_positive[a_t][i-1][0])*quadratics_positive[a_t][i-1][2])<=0 and i>=1:
             i = i-1
@@ -192,11 +269,23 @@ def changepoint_estimation(data, epsilon):
     
         # Now negative update
         k = len(quadratics_negative[a_t])
-        quadratic_add = [N[a_t],S[a_t],-np.inf,N.copy(),S.copy(),t+1]
+        quadratic_add = [N[a_t],S[a_t],-np.inf,t+1]
         i = k
         while (2*(quadratic_add[1]-quadratics_negative[a_t][i-1][1])-(quadratic_add[0]-quadratics_negative[a_t][i-1][0])*quadratics_negative[a_t][i-1][2])>=0 and i>=1:
             i = i-1
         quadratic_add[2] = min(0,2*(quadratic_add[0]-quadratics_negative[a_t][i-1][0])/(quadratic_add[2]-quadratics_negative[a_t][i-1][2]))
         quadratics_negative[a_t] = quadratics_negative[a_t][:i].copy()
         quadratics_negative[a_t].append(tuple(quadratic_add))
-    return changepoint_location, stream_mle
+
+        best_glr = 0
+        # iterate through quadratics and get change-point estimate
+        for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
+            if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
+                best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+                v_previous[a_t] = quadratic[3]
+                glr_previous[a_t] = best_glr
+        m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
+        v_t = v_previous[m_t]
+        changepoint_history[t] = v_t
+        glr_history[t] = glr_previous
+    return changepoint_history, glr_history

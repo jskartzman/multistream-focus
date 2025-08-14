@@ -27,13 +27,12 @@ def focus_decay(data, threshold):
     #M_previous = np.random.randint(M)
     glr_previous = np.zeros(M)
     v_previous = np.zeros(M)
-    # tau, s, l, vec{S}, vec{N} 
     
     for t in range(T):
         # First perform stream selection with epsilon-greedy
         m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
         v_t = v_previous[m_t]
-        epsilon = min(1,(t+1-v_t)**(-1/3))
+        epsilon = min(1,M*(t+1-v_t)**(-1/3))
         exploration = bernoulli.rvs(epsilon)
         if exploration:
             a_t = np.random.randint(M)
@@ -72,7 +71,7 @@ def focus_decay(data, threshold):
                 glr_previous[a_t] = best_glr
         if best_glr>=threshold:
             return t+1, best_glr
-
+"""
 def focus_nonuhat(data, threshold):
     # Implementation of multi-stream FOCuS for any mu
     # Each stream gets its own set of quadratics
@@ -223,7 +222,7 @@ def single_stream(data, threshold):
                 best_glr = (S-quadratic[1])**2/(2*(t+1-quadratic[0]))
         if best_glr>=threshold:
             return t+1, best_glr
-
+"""
 
 def generate_history(data):
     # Implementation of multi-stream FOCuS for any mu
@@ -238,6 +237,7 @@ def generate_history(data):
     M_previous = np.random.randint(M)
     v_previous = 0
     changepoint_history = np.zeros(T)
+    eps_history = np.zeros(T)
     glr_history = np.zeros((T,M))
     glr_previous = np.zeros(M)
     v_previous = np.zeros(M)
@@ -247,7 +247,8 @@ def generate_history(data):
         # First perform stream selection with epsilon-greedy
         m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
         v_t = v_previous[m_t]
-        epsilon = min(1,(t+1-v_t)**(-1/3))
+        epsilon = min(1,M*(t+1-v_t)**(-1/3))
+        eps_history[t] = epsilon
         exploration = bernoulli.rvs(epsilon)
         if exploration:
             a_t = np.random.randint(M)
@@ -288,4 +289,4 @@ def generate_history(data):
         v_t = v_previous[m_t]
         changepoint_history[t] = v_t
         glr_history[t] = glr_previous
-    return changepoint_history, glr_history
+    return changepoint_history, glr_history, eps_history

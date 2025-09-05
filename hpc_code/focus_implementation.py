@@ -8,30 +8,32 @@ import sys
 def generate_data(M, T, nu, mu1):
     """DEPRECATED: Memory-intensive batch data generation. Use streaming versions instead."""
     mu0 = 0
-    # Assume changepoint is in stream 0
+    # Assume changepoint is in last stream (M-1)
     # Convert nu to int for array indexing and size parameters
     nu = int(nu)
     data = np.zeros((M,T))
-    data[0][:nu] = np.random.normal(0, 1, size=nu)  # Replaced norm.rvs()
-    data[0][nu:] = np.random.normal(mu1, 1, size=T-nu)  # Replaced norm.rvs()
-    for i in range(1,M):
+    data[M-1][:nu] = np.random.normal(0, 1, size=nu)  # Replaced norm.rvs()
+    data[M-1][nu:] = np.random.normal(mu1, 1, size=T-nu)  # Replaced norm.rvs()
+    for i in range(M-1):
         data[i] = np.random.normal(mu0, 1, size=T)  # Replaced norm.rvs()
     return data
 
-def generate_streaming_observation(stream, time, nu, mu1, mu0=0):
+def generate_streaming_observation(stream, time, nu, mu1, M, mu0=0):
     """
     Generate a single observation for streaming algorithms.
     
     Parameters:
     -----------
     stream : int
-        Stream index (0 has change point, others don't)
+        Stream index (M-1 has change point, others don't)
     time : int
         Current time step
     nu : int
         Change point location
     mu1 : float
         Post-change mean
+    M : int
+        Total number of streams
     mu0 : float
         Pre-change mean (default: 0)
         
@@ -39,8 +41,8 @@ def generate_streaming_observation(stream, time, nu, mu1, mu0=0):
     --------
     float : Single observation
     """
-    if stream == 0:
-        # Stream 0 has the change point
+    if stream == M-1:
+        # Last stream (M-1) has the change point
         if time < nu:
             return np.random.normal(mu0, 1)  # Pre-change
         else:
@@ -66,7 +68,7 @@ def focus_decay_streaming(M, T, nu, mu1, threshold):
         # Stream selection with epsilon-greedy
         m_t = np.random.choice(np.where(glr_previous == np.max(glr_previous))[0])
         v_t = v_previous[m_t]
-        epsilon = min(1, (t+1-v_t)**(-1/3))
+        epsilon = min(1, M*(t+1-v_t)**(-1/3))
         exploration = np.random.random() < epsilon # Replaced bernoulli.rvs()
         
         if exploration:
@@ -75,7 +77,7 @@ def focus_decay_streaming(M, T, nu, mu1, threshold):
             a_t = m_t
             
         # Generate single observation on-demand
-        X_t = generate_streaming_observation(a_t, t, nu, mu1)
+        X_t = generate_streaming_observation(a_t, t, nu, mu1, M)
         
         # Update statistics
         N[a_t] = N[a_t] + 1
@@ -90,6 +92,7 @@ def focus_decay_streaming(M, T, nu, mu1, threshold):
         quadratic_add[2] = max(0, 2*(quadratic_add[0]-quadratics_positive[a_t][i-1][0])/(quadratic_add[2]-quadratics_positive[a_t][i-1][2]))
         quadratics_positive[a_t] = quadratics_positive[a_t][:i].copy()
         quadratics_positive[a_t].append(tuple(quadratic_add))
+        # print(quadratics_positive[a_t])
         
         # Negative update
         k = len(quadratics_negative[a_t])
@@ -112,6 +115,76 @@ def focus_decay_streaming(M, T, nu, mu1, threshold):
         # Early stopping: return immediately upon detection
         if best_glr >= threshold:
             return t + 1, best_glr
+            
+    return None  # No detection within time horizon
+
+def glr_round_robin_streaming(M, T, nu, mu1, threshold):
+    """
+    Simplified round-robin GLR algorithm.
+    Uses GLR for detection but simple sample mean for switching condition.
+    """
+    # Initialize algorithm state
+    S = np.zeros(M)
+    N = np.zeros(M)
+    quadratics_positive = [[(0,0,0)] for m in range(M)]
+    quadratics_negative = [[(0,0,0)] for m in range(M)]
+    current_stream = 0  # Start with stream 0
+    
+    for t in range(T):
+        # Use current stream
+        a_t = current_stream
+        
+        # Generate single observation on-demand
+        X_t = generate_streaming_observation(a_t, t, nu, mu1, M)
+        
+        # Update statistics
+        N[a_t] = N[a_t] + 1
+        S[a_t] = S[a_t] + X_t
+        
+        # Positive update
+        k = len(quadratics_positive[a_t])
+        quadratic_add = [N[a_t], S[a_t], np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_positive[a_t][i-1][1])-(quadratic_add[0]-quadratics_positive[a_t][i-1][0])*quadratics_positive[a_t][i-1][2])<=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = max(0, 2*(quadratic_add[0]-quadratics_positive[a_t][i-1][0])/(quadratic_add[2]-quadratics_positive[a_t][i-1][2]))
+        quadratics_positive[a_t] = quadratics_positive[a_t][:i].copy()
+        quadratics_positive[a_t].append(tuple(quadratic_add))
+        # print the value of k and i
+
+
+        # Negative update
+        k = len(quadratics_negative[a_t])
+        quadratic_add = [N[a_t], S[a_t], -np.inf]
+        i = k
+        while (2*(quadratic_add[1]-quadratics_negative[a_t][i-1][1])-(quadratic_add[0]-quadratics_negative[a_t][i-1][0])*quadratics_negative[a_t][i-1][2])>=0 and i>=1:
+            i = i-1
+        quadratic_add[2] = min(0, 2*(quadratic_add[0]-quadratics_negative[a_t][i-1][0])/(quadratic_add[2]-quadratics_negative[a_t][i-1][2]))
+        quadratics_negative[a_t] = quadratics_negative[a_t][:i].copy()
+        quadratics_negative[a_t].append(tuple(quadratic_add))
+        
+        # Calculate GLR for detection
+        best_glr = 0
+        for quadratic in quadratics_positive[a_t] + quadratics_negative[a_t]:
+            if N[a_t]-quadratic[0]>0 and (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))>best_glr:
+                best_glr = (S[a_t]-quadratic[1])**2/(2*(N[a_t]-quadratic[0]))
+        
+        # Early stopping: return immediately upon detection
+        if best_glr >= threshold:
+            return t + 1, best_glr
+        
+        # Simple switching condition: if sample mean is negative, switch streams
+        if N[a_t] > 0:
+            sample_mean = S[a_t] / N[a_t]
+            if sample_mean < 0:
+                # Reset all statistics for the current stream
+                S[a_t] = 0
+                N[a_t] = 0
+                quadratics_positive[a_t] = [(0,0,0)]
+                quadratics_negative[a_t] = [(0,0,0)]
+                
+                # Move to next stream
+                current_stream = (current_stream + 1) % M
             
     return None  # No detection within time horizon
 
@@ -139,7 +212,7 @@ def focus_nonuhat_streaming(M, T, nu, mu1, threshold):
             a_t = m_t
             
         # Generate single observation on-demand
-        X_t = generate_streaming_observation(a_t, t, nu, mu1)
+        X_t = generate_streaming_observation(a_t, t, nu, mu1, M)
         
         # Update statistics
         N[a_t] = N[a_t] + 1
@@ -205,7 +278,7 @@ def focus_oracle_streaming(M, T, nu, mu1, threshold):
             a_t = m_t
             
         # Generate single observation on-demand
-        X_t = generate_streaming_observation(a_t, t, nu, mu1)
+        X_t = generate_streaming_observation(a_t, t, nu, mu1, M)
         
         # Update statistics
         N[a_t] = N[a_t] + 1
@@ -264,7 +337,7 @@ def xumei_streaming(M, T, nu, mu1, threshold, lower_bound):
                 return None
                 
             # Generate single data point on-demand with change point support
-            if stream == 0:  # Stream 0 has change point
+            if stream == M-1:  # Last stream (M-1) has change point
                 if t < nu:
                     x_t = np.random.normal(0, 1)  # Pre-change
                 else:
@@ -316,6 +389,14 @@ def focus_oracle(data, threshold, nu):
     M, T = data.shape
     # For oracle, we need to assume some mu1 value since it's not provided
     return focus_oracle_streaming(M, T, nu=nu, mu1=1.0, threshold=threshold)
+
+def glr_round_robin(data, threshold):
+    """
+    COMPATIBILITY WRAPPER
+    """
+    M, T = data.shape
+    # For compatibility, assume no change point (ARL mode) since we can't infer nu/mu1
+    return glr_round_robin_streaming(M, T, nu=0, mu1=0, threshold=threshold)
 
 def single_stream(data, threshold):
     quadratics_positive = [(0,0,0)]

@@ -142,11 +142,10 @@ def run_arl_experiment(algorithm, Ms, thresholds, T=int(2e5),
     return arl_means, arl_stds, all_detection_times
 
 def save_arl_results(algorithm, Ms, thresholds, arl_means, arl_stds, T, sims, 
-                    all_detection_times, extra_params=None, n_workers=None):
+                    all_detection_times, extra_params=None, n_workers=None, data_dir="data"):
     """Save comprehensive ARL results using pickle."""
     
     # Create data directory if it doesn't exist
-    data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
     
     # Create timestamp for unique filename
@@ -196,10 +195,10 @@ def save_arl_results(algorithm, Ms, thresholds, arl_means, arl_stds, T, sims,
                 results_data['statistics']['max_detection_times'][i, j] = np.nan
                 results_data['statistics']['median_detection_times'][i, j] = np.nan
     
-    # Create filename
-    M_str = "_".join([f"M{M}" for M in Ms])
-    thresh_str = "_".join([f"{t:.2f}" for t in thresholds])
-    filename = f"arl_{algorithm}_{M_str}_thresholds{thresh_str}_T{T}_sims{sims}_{timestamp}.pkl"
+    # Create short filename (full parameters saved inside pickle file)
+    M_range = f"M{min(Ms)}-{max(Ms)}" if len(Ms) > 1 else f"M{Ms[0]}"
+    thresh_range = f"th{min(thresholds):.1f}-{max(thresholds):.1f}" if len(thresholds) > 1 else f"th{thresholds[0]:.1f}"
+    filename = f"arl_{algorithm}_{M_range}_{thresh_range}_T{T//1000}k_s{sims}_{timestamp}.pkl"
     filepath = os.path.join(data_dir, filename)
     
     # Save using pickle
@@ -223,12 +222,15 @@ def main():
                        help='Maximum threshold to test')
     parser.add_argument('--threshold-steps', type=int, default=5,
                        help='Number of threshold steps')
+    parser.add_argument('--thresholds', type=str, default=None,
+                       help='Comma-separated exact threshold values (overrides min/max/steps)')
     parser.add_argument('--T', type=int, default=1000000, help='Time horizon')
     parser.add_argument('--sims', type=int, default=50, help='Number of simulations')
     parser.add_argument('--workers', type=int, default=None, help='Number of workers')
     parser.add_argument('--xumei-lb', type=float, default=2.0, 
                        help='Lower bound for xumei algorithm')
     parser.add_argument('--save', action='store_true', help='Save results to files')
+    parser.add_argument('--data-dir', type=str, default='data', help='Directory to save data files')
     
     args = parser.parse_args()
     
@@ -237,12 +239,18 @@ def main():
     Ms = [int(x.strip()) for x in args.Ms.split(',')]
     
     # Generate threshold range
-    thresholds = np.linspace(args.threshold_min, args.threshold_max, args.threshold_steps)
+    if args.thresholds:
+        thresholds = np.array([float(x.strip()) for x in args.thresholds.split(',')])
+    else:
+        thresholds = np.linspace(args.threshold_min, args.threshold_max, args.threshold_steps)
     
     print(f"Starting ARL experiments for {len(algorithms)} algorithms")
     print(f"Algorithms: {algorithms}")
     print(f"Streams: {Ms}")
-    print(f"Thresholds: {len(thresholds)} steps from {args.threshold_min} to {args.threshold_max}")
+    if args.thresholds:
+        print(f"Thresholds: {len(thresholds)} exact values: {thresholds}")
+    else:
+        print(f"Thresholds: {len(thresholds)} steps from {args.threshold_min} to {args.threshold_max}")
     print("=" * 60)
     
     # Run experiments for each algorithm
@@ -262,7 +270,7 @@ def main():
         # Save results if requested
         if args.save:
             save_arl_results(algorithm, Ms, thresholds, arl_means, arl_stds, 
-                            args.T, args.sims, all_times, extra_params, args.workers)
+                            args.T, args.sims, all_times, extra_params, args.workers, args.data_dir)
     
     print(f"\nCompleted ARL experiments for all {len(algorithms)} algorithms!")
     return

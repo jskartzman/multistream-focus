@@ -153,11 +153,10 @@ def run_experiment_streaming(algorithm, nus, thresholds, M=10, T=int(1e6), mu1=1
     return run_experiment(algorithm, nus, thresholds, M, T, mu1, sims, n_workers, extra_params)
 
 def save_edd_results(algorithm, nus, thresholds, edd_means, edd_stds, T, sims, 
-                    all_detection_times, extra_params=None, n_workers=None, M=10, mu1=1.0):
+                    all_detection_times, extra_params=None, n_workers=None, M=10, mu1=1.0, data_dir="data"):
     """Save comprehensive EDD results using pickle."""
     
     # Create data directory if it doesn't exist
-    data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
     
     # Create timestamp for unique filename
@@ -211,10 +210,10 @@ def save_edd_results(algorithm, nus, thresholds, edd_means, edd_stds, T, sims,
                 results_data['statistics']['max_detection_times'][i, j] = np.nan
                 results_data['statistics']['median_detection_times'][i, j] = np.nan
     
-    # Create filename
-    nu_str = "_".join([f"nu{nu}" for nu in nus])
-    thresh_str = "_".join([f"{t:.2f}" for t in thresholds])
-    filename = f"edd_{algorithm}_{nu_str}_thresholds{thresh_str}_M{M}_mu{mu1}_T{T}_sims{sims}_{timestamp}.pkl"
+    # Create short filename (full parameters saved inside pickle file)
+    nu_range = f"nu{min(nus):.0f}-{max(nus):.0f}" if len(nus) > 1 else f"nu{nus[0]:.0f}"
+    thresh_range = f"th{min(thresholds):.1f}-{max(thresholds):.1f}" if len(thresholds) > 1 else f"th{thresholds[0]:.1f}"
+    filename = f"edd_{algorithm}_{nu_range}_{thresh_range}_M{M}_T{T//1000}k_s{sims}_{timestamp}.pkl"
     filepath = os.path.join(data_dir, filename)
     
     # Save using pickle
@@ -247,6 +246,7 @@ def main():
     parser.add_argument('--xumei-lb', type=float, default=0.1, 
                        help='Lower bound for xumei algorithm')
     parser.add_argument('--save', action='store_true', help='Save results to files')
+    parser.add_argument('--data-dir', type=str, default='data', help='Directory to save data files')
     
     args = parser.parse_args()
     
@@ -291,7 +291,7 @@ def main():
             # Save results if requested
             if args.save:
                 save_edd_results(algorithm, nus, thresholds, edd_means, edd_stds, args.T, 
-                                args.sims, all_detection_times, extra_params, args.workers, M, args.mu1)
+                                args.sims, all_detection_times, extra_params, args.workers, M, args.mu1, args.data_dir)
     
     print(f"\nCompleted EDD experiments for all {len(algorithms)} algorithms and {len(Ms)} stream configurations!")
     return
